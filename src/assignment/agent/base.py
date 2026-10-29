@@ -16,6 +16,7 @@ from typing import Any
 
 from dotenv import load_dotenv
 from openai import OpenAI
+import yaml
 
 from assignment.env import Environment
 from assignment.agent.tools import INVOKE_SKILL_TOOL
@@ -62,6 +63,50 @@ def rough_message_tokens(messages: list[dict[str, Any]]) -> int:
 
     serialized = json.dumps(messages, ensure_ascii=False, separators=(",", ":"))
     return max(1, math.ceil(len(serialized) / 4))
+
+
+def parse_skill_frontmatter(content: str, source: Path) -> dict[str, str]:
+    """Return the ``name`` and ``description`` from a skill file's frontmatter.
+
+    The frontmatter is the YAML between a first line of ``---`` and the next
+    ``---`` line. Anything missing or malformed raises ``ValueError`` naming
+    ``source``, so a broken skill is easy to locate.
+    """
+
+    lines = content.splitlines()
+    if not lines or lines[0].strip() != "---":
+        raise ValueError(
+            f"{source}: missing YAML frontmatter; the file must start with '---'."
+        )
+    # Search line by line: a later '---' in the body (a Markdown rule) must not
+    # be mistaken for the end of the frontmatter.
+    try:
+        end = next(i for i in range(1, len(lines)) if lines[i].strip() == "---")
+    except StopIteration:
+        raise ValueError(
+            f"{source}: frontmatter is not closed by a '---' line."
+        ) from None
+
+    try:
+        frontmatter = yaml.safe_load("\n".join(lines[1:end]))
+    except yaml.YAMLError as exc:
+        raise ValueError(f"{source}: frontmatter is not valid YAML: {exc}") from exc
+    if not isinstance(frontmatter, dict):
+        raise ValueError(f"{source}: frontmatter must be a YAML mapping.")
+
+    # YAML turns bare values like `123` or `yes` into non-strings, and an
+    # empty value into None, so check the type rather than just presence.
+    for key in ("name", "description"):
+        value = frontmatter.get(key)
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(
+                f"{source}: frontmatter needs a non-empty string {key!r}."
+            )
+    return {
+        "name": frontmatter["name"].strip(),
+        # Collapse folded or multi-line descriptions so the catalog stays concise.
+        "description": " ".join(frontmatter["description"].split()),
+    }
 
 
 class Agent:
@@ -152,6 +197,10 @@ class Agent:
 
         # TODO(1.1.a): Add machinery to maintain agent state as it takes actions
         # and observes the results.
+        # Everything after the opening system/user pair, in API order:
+        # assistant actions (with tool calls and reasoning fields), the tool
+        # observations answering them, and any follow-up user messages.
+        self.history: list[dict[str, Any]] = []
 
     def load_skills(self, skills_path: Path) -> dict[str, dict[str, str]]:
         """Load the skill folders exposed to this agent."""
@@ -164,7 +213,36 @@ class Agent:
         # ``content`` of the skill file for ``invoke_skill``. Reject duplicate
         # names and malformed or missing frontmatter with a clear
         # ``ValueError``.
-        raise NotImplementedError
+        skills_path = Path(skills_path)
+        if not skills_path.is_dir():
+            raise ValueError(f"skills_path {skills_path} is not a directory.")
+
+        skills: dict[str, dict[str, str]] = {}
+        # Sorted so the catalog order, and which duplicate is reported, is
+        # stable across platforms. Hidden directories are not skills.
+        skill_dirs = sorted(
+            child
+            for child in skills_path.iterdir()
+            if child.is_dir() and not child.name.startswith(".")
+        )
+        for skill_dir in skill_dirs:
+            skill_file = skill_dir / "SKILL.md"
+            if not skill_file.is_file():
+                raise ValueError(f"Skill directory {skill_dir} has no SKILL.md.")
+            # utf-8-sig drops a byte-order mark some Windows editors add, which
+            # would otherwise hide the opening '---'.
+            content = skill_file.read_text(encoding="utf-8-sig")
+            frontmatter = parse_skill_frontmatter(content, skill_file)
+            name = frontmatter["name"]
+            if name in skills:
+                raise ValueError(f"Duplicate skill name {name!r} in {skill_file}.")
+            skills[name] = {
+                # The catalog entry: name and description only.
+                "metadata": f"name: {name}\ndescription: {frontmatter['description']}",
+                # The whole file, returned by invoke_skill.
+                "content": content,
+            }
+        return skills
 
     def query_language_model(self) -> dict[str, Any]:
         """Send one tool-enabled Chat Completions request and normalize it."""
@@ -217,6 +295,16 @@ class Agent:
 
         return response.choices[0].message.model_dump(exclude_none=True)
 
+    def record_messages(self, *messages: dict[str, Any]) -> None:
+        """Append interaction messages to the history that `build_prompt` replays.
+
+        Copies are stored so later mutation by a caller cannot rewrite the
+        recorded trajectory.
+        """
+
+        for message in messages:
+            self.history.append(deepcopy(message))
+
     def build_prompt(self) -> list[dict[str, Any]]:
         # TODO(1.1.a): Construct a sequence of messages that form the language
         # model prompt. This should include standing instructions, task
@@ -227,7 +315,15 @@ class Agent:
 
         # You want to be careful about which attributes of the class you modify
         # here as they may also be handled by the subclasses.
-        raise NotImplementedError
+
+        # Read the prompts on every call: subclasses set them after
+        # `Agent.__init__` returns, so they cannot be captured at init time.
+        messages: list[dict[str, Any]] = [
+            {"role": "system", "content": self.system_prompt},
+            {"role": "user", "content": self.task_prompt},
+        ]
+        messages.extend(deepcopy(self.history))
+        return messages
 
     def estimate_active_prompt_tokens(self) -> int:
         """Estimate the next prompt, calibrated by the provider's latest usage."""
@@ -330,13 +426,38 @@ class Agent:
             # step. Ensure you identify when the agent has completed the task
             # by setting `Agent.finished`. If the agent exceeds the
             # `step_limit`, raise `StepLimitError`.
+            while not self.finished:
+                # 1. 先检查步数，再调用模型
+                if self.steps_taken >= self.step_limit:
+                    raise StepLimitError(
+                        f"Agent did not finish within {self.step_limit} steps."
+                    )
+
+                # 2.2 再接上；没开启压缩时它会直接返回 False
+                self.maybe_compact_context()
+
+                # 2. 调用模型，拿到 assistant 消息
+                message = self.query_language_model()
+                self.record_messages(message)
+
+                # 3. 有工具调用就执行；纯文本回复就提醒它继续
+                tool_calls = message.get("tool_calls") or []
+                if tool_calls:
+                    observations = self.execute_tool_calls(tool_calls)
+                    self.record_messages(*observations)
+                else:
+                    self.record_messages({
+                        "role": "user",
+                        "content": "You did not call a tool. Continue the task by calling a tool.",
+                    })
 
             # TODO(2.2) Call `maybe_compact_context()` before each new action
             # request in your shared loop. It already estimates active tokens
             # and handles the threshold, and tracks compaction events for
             # logging.
 
-            raise NotImplementedError
+            # raise NotImplementedError
+            
         finally:
             # This block is provided infrastructure. Do not modify it: a
             # trajectory is required even when a run fails.

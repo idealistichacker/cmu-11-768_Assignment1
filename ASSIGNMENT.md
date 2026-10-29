@@ -23,22 +23,27 @@ buggy chess app -> CodeAgent -> fix.patch -> repaired chess server
 ## Setup
 
 Install [uv](https://docs.astral.sh/uv/), then run:
+
 ```bash
 make setup
 ```
+
 This will set up a Python environment (using `uv`), download and install relevant dependencies. This fails if either pinned `chess_app` source (for a task that your agent will work on) is missing or at the wrong commit.
 
-This assignment will make use of [Modal](https://modal.com/), a cloud platform for running code. This platform will allow you to run code that your agent generates safely on a cloud machine. The environments where your agents will be on a remote Modal sandbox, and run code that executes agent actions. First, set up a Modal account (if you do not have one), and follow instructions that you will be sent to access compute credit on Modal. Then, run 
+This assignment will make use of [Modal](https://modal.com/), a cloud platform for running code. This platform will allow you to run code that your agent generates safely on a cloud machine. The environments where your agents will be on a remote Modal sandbox, and run code that executes agent actions. First, set up a Modal account (if you do not have one), and follow instructions that you will be sent to access compute credit on Modal. Then, run
+
 ```bash
 uv run modal setup
 ```
+
 to sign in and set up Modal in your environment.
 
+Once you have set up Modal, run
 
-Once you have set up Modal, run 
 ```bash
 cp .env.example .env
 ```
+
 to create the file that contains your environment secrets – primarily LLM API details. You will receive instructions on how to access credits for an LLM provider if you are enrolled in the course. Follow the instructions to generate an API key, and ensure you configure the base URL for the service correctly.
 
 ```dotenv
@@ -47,25 +52,30 @@ OPENAI_API_KEY=...
 OPENAI_MODEL=deepseek/deepseek-v4-flash-0731
 OPENAI_MAX_RETRIES=5
 ```
+
 By default, you will use the DeepSeek-V4-Flash model, as you can see above. When indicated, you should use another model. Feel free to explore other models from the same provider if credits permit, but we intend the assignment to be solved with this model.
 
 We will refer to any activity that will use API credits (from Modal, or the LLM provider) as _billable_. You will run billable evaluations throughout the assignment. We recommend monitoring your use on relevant dashboards to ensure you make good use of the API credits.
 
 Before a billable run, validate submodules, Modal authentication, and the model endpoint without starting a sandbox or generating tokens:
+
 ```bash
 make doctor
 ```
 
 _(Optional)_ If you would like to test that all Modal components are running as intended, run
+
 ```bash
 make test-modal
 make test-chess-modal
 ```
 
 As a general tip, you can use
+
 ```bash
 modal container list
 ```
+
 to check that whether you have a billable Modal sandbox running. If the environment incorrectly shuts down, the sandbox may be left running and use up credits. You can use `modal container stop <container ID>` to stop a sandbox that was not correctly terminated.
 
 ## Public tests
@@ -88,18 +98,19 @@ The shared `Agent` must implement a conventional ReAct loop: build a request, ob
 
 ### 1. Build the prompt
 
-The prompt for the language model is a sequence of messages used to query the language model at every step of the interaction. A message is a dictionary object. Minimally, it has the `role` and `content` keys, and may have additional information. The `content` of the message maybe a string, or a structured object that contains reasoning tokens, or (in cases not covered in this assignment) images. The message's `role` can take one of a few values. 
+The prompt for the language model is a sequence of messages used to query the language model at every step of the interaction. A message is a dictionary object. Minimally, it has the `role` and `content` keys, and may have additional information. The `content` of the message maybe a string, or a structured object that contains reasoning tokens, or (in cases not covered in this assignment) images. The message's `role` can take one of a few values.
 
 The `system` role is used to provide standing instructions – instructions about the domain, information about the environment, rules to follow, general strategies that may be useful across tasks, etc. The `user` role provides the task information[^1] and additional guidelines for solving the task if necessary. `assistant` role messages are used to indicate the LLM generations, and `tool` role messages represent the results of tool calls that act as observations of the environment. Your task is to structure the sequence of these messages. By convention, exactly one `system` message appears first, and a `user` message follows before any assistant messages. Since the LLM generates one response at a time, an `assistant` message should be followed by `tool` messages (which reveal the results of tool calls) or a `user` message. You can find information about the structure of these messages at the [OpenAI API reference](https://developers.openai.com/api/reference/python/resources/chat/subresources/completions/methods/create) and this [example](https://docs.vllm.ai/en/v0.7.2/getting_started/examples/openai_chat_completion_client_with_tools.html) from the vLLM docs.
 
 You need to implement the `Agent.build_prompt` method. Given the system prompt, and the task prompt accessible as attributes of the agent class, and any additional book-keeping you may add, this method should prepare the input to the language model. As you can see, we provide an `Agent.query_language_model` method that directly uses the output of this method to query the language model API. Your implementation needs to supply this query with the correct inputs. The `Agent.query_language_model` method supplies the language model API with the tools and inference parameters, and returns a structure that contains all relevant information. It also maintains the step count – the number of times the API is queried. The API handles rendering the provided prompt and tools into a single token sequence, and is not something you have to handle. It also provides additional machinery to log your requests for grading, which you should not modify.
 
-The agent's LLM client retries temporary provider failures up to `OPENAI_MAX_RETRIES` times. 
+The agent's LLM client retries temporary provider failures up to `OPENAI_MAX_RETRIES` times.
 
 > **TODO(1.1.a)**
 > Add machinery to maintain agent state as it takes actions and observes the results. Construct a sequence of messages that form the language model prompt. This should include standing instructions, task specification, prior interaction including observations, reasoning, and actions from previous turns. Note that this method should be domain-agnostic and construct the prompt in a way that would apply to any of the inheriting domain-specific agents.
 
 Next, you should construct the system and task prompts for `CodeAgent`. The system message _must_ contain this block verbatim, using values exposed by the environment:
+
 ```text
 <system_information>
 {
@@ -116,7 +127,7 @@ Next, you should construct the system and task prompts for `CodeAgent`. The syst
 
 ### 2. Run the ReAct loop
 
-Implement the body of `Agent.run`. 
+Implement the body of `Agent.run`.
 
 > **TODO(1.2)**
 > Run the ReAct loop. Orchestrate the sequence of prompting the language model to produce reasoning and actions, extracting the tool calls produced by the model, and executing the tool calls to obtain the agent's observation for the next step. Ensure you identify when the agent has completed the task by setting `Agent.finished`. If the agent exceeds the `step_limit`, raise `StepLimitError`.
@@ -129,6 +140,7 @@ Implement `CodeAgent.execute_tool_calls`. The coding agent supports two tools: `
 > Make the `execute` and `send_message` tools available to the agent. Parse each call, execute recognized tools, and return one message per call (there may be multiple tool calls in one agent response!). Malformed JSON and unknown tools must become recoverable observations relayed to the agent instead of exceptions.
 
 ### 4. Load skills
+
 You might think we're all set to run the agent on a software issue, but not yet! One final piece of knowledge `CodeAgent` needs is instructions on how to submit the solution. The specific protocol we are using is that once the agent has solved the issue, it saves its solution in a file called `patch.txt`. This file is extracted from the environment for evaluation.
 
 To teach the agent this protocol, we will use a skill. Skills are ways to extend agent capabilities with specialized, reusable workflows. The [Agent Skills protocol](https://agentskills.io/home) defines a standard for skills to follow so they can be supported by multiple agent frameworks. `tasks/code-skills/submit-task` defines a rudimentary skill for submitting the solution following this protocol. While the protocol has more advanced features you can explore, you will work with a minimal skill for this assignment.
@@ -141,6 +153,7 @@ The skill files are available [locally](./tasks/code-skills/), and `Agent.skills
 > Validate ``skills_path``, discover one ``SKILL.md`` per child directory, parse its YAML frontmatter (what's between the `---` tags at the head of the file), and return a mapping keyed by the frontmatter ``name``. Each value must contain a concise ``metadata`` string for the model's skill catalog and the complete ``content`` of the skill file for ``invoke_skill``. Reject duplicate names and malformed or missing frontmatter with a clear ``ValueError``. If any skills are available to the agent, make their descriptions/metadata available to the agent in the prompt.
 
 For example, the `SKILL.md` has `content`
+
 ```
 ---
 name: hello-world
@@ -149,7 +162,9 @@ description: Write "hello, world" to the terminal
 
 echo "hello, world"
 ```
+
 and `metadata`
+
 ```
 name: hello-world
 description: Write "hello, world" to the terminal
@@ -205,7 +220,7 @@ SWEBENCH_TRAJECTORY=artifacts/django__django-15368-baseline-trajectory.json \
 make run-swebench-agent INSTANCE=django__django-15368
 ```
 
-The submitted compacted run must trigger at least one compaction, materially reduce active context, and produce a patch that passes `check-swebench`. Generation is stochastic, so it need not use fewer ReAct steps than every baseline sample. 
+The submitted compacted run must trigger at least one compaction, materially reduce active context, and produce a patch that passes `check-swebench`. Generation is stochastic, so it need not use fewer ReAct steps than every baseline sample.
 
 Once you have produced both the compaction and no-compaction trajectories, compare token usage across the trajectories. Present your observations in `artifacts/token-usage-analysis.md`, and provide a brief explanation for the trends you observe. What are the tradeoffs in context usage between the compaction and no-compaction conditions?
 
@@ -221,7 +236,6 @@ You will first define a new tool that allows the agent to play the game that is 
 > Define an OpenAI function-tool schema named ``play_move``. It must accept exactly one required string argument named ``move``, explain that moves use [UCI notation](https://en.wikipedia.org/wiki/Universal_Chess_Interface) (for example `e2e4` and `e7e8q`), and reject extra arguments.
 
 Then, you will implement the mechanism that runs the tool.[^3]
-
 
 > **TODO(3.1.b)**
 > Implement `_play_move` in `chess_tools.py`. Parse the arguments and POST `{"move": <uci move>}` to `/api/move`. Return its serialized JSON object. Catch any errors raised by the tool and return an error message between `<chess_error></chess_error>` for the agent to address. Cover malformed JSON arguments, arguments that are not an object, a missing or non-string fen, a non-string move, a position or move the server rejects, and a transport failure.
@@ -265,12 +279,12 @@ the experiment and evidence, not on a particular result or winning the game.
 
 ### 3. Add `simulate_move`
 
-To allow the agent the ability to plan more complex strategies, you will give it the ability to simulate moves. Simulation allows the agent to simulate the effect of playing a move, but not actually change the state of the actual game board. You will define and register `SIMULATE_MOVE_TOOL`, implement `_simulate_move`, and add it to the existing dispatcher. 
+To allow the agent the ability to plan more complex strategies, you will give it the ability to simulate moves. Simulation allows the agent to simulate the effect of playing a move, but not actually change the state of the actual game board. You will define and register `SIMULATE_MOVE_TOOL`, implement `_simulate_move`, and add it to the existing dispatcher.
 
 > **TODO(3.3.a)**
 > Define the `simulate_move` tool, like the `play_move` tool.
 
-`simulate_move(fen, move=None)` calls `POST /api/simulate`. 
+`simulate_move(fen, move=None)` calls `POST /api/simulate`.
 
 Passing a complete six-field [FEN](https://en.wikipedia.org/wiki/Forsyth%E2%80%93Edwards_Notation) alone to `simulate_move` returns that position and its legal moves. Passing a FEN plus UCI move returns the position after exactly one ply, for either side. Return the JSON so Python can use `fen`, `squares`, `turn`, `legal_moves`, and terminal-result fields.
 
@@ -285,7 +299,7 @@ With the ability to simulate moves on the board, the agent can now engage in mor
 
 > **TODO(3.4)**
 > Parse the arguments and run the code in the sandbox with the registered tools available by name. `/opt/assignment/sandbox_python.py` is a script on the `env` sandbox that has access to the same tool definitions in this file. Use it to run the code that the model produced as an argument to the run_python tool. The script accepts two positional arguments -- `port` and a base64-encoded string of code (to prevent issues with quoting). Implement this tool call.
-> The script prints one JSON object with `stdout`, `stderr`, and `error` from running the code -- return that string as it is. A non-zero returncode means the sandbox itself failed, not the model's code. Report `exception_info` or `stderr` as a <chess_error>. 
+> The script prints one JSON object with `stdout`, `stderr`, and `error` from running the code -- return that string as it is. A non-zero returncode means the sandbox itself failed, not the model's code. Report `exception_info` or `stderr` as a <chess_error>.
 > Return <chess_error>{message}</chess_error> if there are issues like type mismatches or parsing failures.
 
 Model-written code must not run in the local agent process. `_run_python` sends base64-encoded code through `env.execute` to the provided sandbox runner:
@@ -326,28 +340,28 @@ The trajectory must show `invoke_skill`, then `run_python` code that calls `simu
 The assignment is worth **100 points**. Each row is graded independently; a
 failed stochastic model run does not erase unrelated implementation credit.
 
-| Part | Criterion | Points | Evidence |
-|---|---|---|---|
-| 1 | Prompt construction and valid action/observation history | 6 | Private unit tests |
-| 1 | ReAct lifecycle, text-only recovery, step limit, cleanup, trajectory | 6 | Private unit tests |
-| 1 | Coding-tool dispatch, recoverable errors, patch submission | 6 | Private unit tests |
-| 1 | Chess patch applies and passes private/regression tests | 8 | Patch replay in fresh testbed |
-| 1 | Skill discovery and `invoke_skill` behavior | 4 | Private tests |
-| 2 | Compaction trigger and model-generated summary | 6 | Private tests and trajectory |
-| 2 | Original instructions and complete recent tool step remain valid | 6 | Private tests and trajectory |
-| 2 | Auditable compaction materially reduces active context | 4 | Compaction events and usage |
-| 2 | Full context vs. compaction token usage analysis report | 4 | Report |
-| 2 | SWE-bench patch passes FAIL_TO_PASS and PASS_TO_PASS | 8 | Patch replay |
-| 3 | `play_move` schema and registration | 4 | Private tests |
-| 3 | `play_move` state updates and recoverable errors | 6 | Private tests |
-| 3 | Basic chess trajectory reaches a terminal state | 4 | Trajectory and result |
-| 3 | Four-run observation A/B experiment is complete | 4 | Four trajectories, four results |
-| 3 | Observation A/B experiment report | 4 | Report |
-| 3 | `simulate_move` stateless behavior and errors | 6 | Private unit/integration tests |
-| 3 | `run_python` sandbox execution, state refresh, errors | 6 | Private tests with sandbox stand-in |
-| 3 | Skill trajectory combines skill, programmatic search, and live move | 6 | Trajectory replay |
-| — | Complete, parseable, rule-compliant submission | 2 | Archive validation |
-| | **Total** | **100** | |
+| Part | Criterion                                                            | Points        | Evidence                            |
+| ---- | -------------------------------------------------------------------- | ------------- | ----------------------------------- |
+| 1    | Prompt construction and valid action/observation history             | 6             | Private unit tests                  |
+| 1    | ReAct lifecycle, text-only recovery, step limit, cleanup, trajectory | 6             | Private unit tests                  |
+| 1    | Coding-tool dispatch, recoverable errors, patch submission           | 6             | Private unit tests                  |
+| 1    | Chess patch applies and passes private/regression tests              | 8             | Patch replay in fresh testbed       |
+| 1    | Skill discovery and `invoke_skill` behavior                        | 4             | Private tests                       |
+| 2    | Compaction trigger and model-generated summary                       | 6             | Private tests and trajectory        |
+| 2    | Original instructions and complete recent tool step remain valid     | 6             | Private tests and trajectory        |
+| 2    | Auditable compaction materially reduces active context               | 4             | Compaction events and usage         |
+| 2    | Full context vs. compaction token usage analysis report              | 4             | Report                              |
+| 2    | SWE-bench patch passes FAIL_TO_PASS and PASS_TO_PASS                 | 8             | Patch replay                        |
+| 3    | `play_move` schema and registration                                | 4             | Private tests                       |
+| 3    | `play_move` state updates and recoverable errors                   | 6             | Private tests                       |
+| 3    | Basic chess trajectory reaches a terminal state                      | 4             | Trajectory and result               |
+| 3    | Four-run observation A/B experiment is complete                      | 4             | Four trajectories, four results     |
+| 3    | Observation A/B experiment report                                    | 4             | Report                              |
+| 3    | `simulate_move` stateless behavior and errors                      | 6             | Private unit/integration tests      |
+| 3    | `run_python` sandbox execution, state refresh, errors              | 6             | Private tests with sandbox stand-in |
+| 3    | Skill trajectory combines skill, programmatic search, and live move  | 6             | Trajectory replay                   |
+| —   | Complete, parseable, rule-compliant submission                       | 2             | Archive validation                  |
+|      | **Total**                                                      | **100** |                                     |
 
 The grader replays patches and submitted trajectories; it does not make new LLM calls. Missing or inconsistent evidence loses credit only for the affected row. Instructor tests and reference patches are not included in this repo.
 
@@ -378,7 +392,7 @@ artifacts/part3-python-skill-trajectory.json
 Also include `src/assignment/prompts.py` only if you changed it. Do **NOT** submit credentials, `.env`, task files, tests, submodule contents, or instructor files. Your ZIP should contain the `src/` and `artifacts` subfolders, and an `AI_USAGE.md` file. The `AI_USAGE.md` should detail your use of any AI technologies for this assignment. List all the tools you used, and provide a clear description of how you used each of these tools. If you did not use any AI assistance, declare that in this file. We will not grade your submitted `AI_USAGE.md` file, but we will check your understanding of the code you submitted through a quiz (details of which will be announced separately).
 
 [^1]: In offline evaluation settings like this, you typically specify the task by structuring it as a request from a user. See these [docs](https://learn.microsoft.com/en-us/azure/foundry/openai/how-to/chatgpt?tabs=python-key%2Cdotnet-secure%2Cjavascript-secure&pivots=programming-language-python) for more examples.
-
+    
 [^2]: A repeated `call_0` ID from a provider is valid: match each tool observation to the call in the same assistant action and do not assume IDs are globally unique across the trajectory.
-
+    
 [^3]: `_play_move` and other tools are isolated in `chess_tools.py` to make executing these tools in a remote sandbox possible. Work within the structure of this code to correctly use the Modal sandbox for execution chess moves.

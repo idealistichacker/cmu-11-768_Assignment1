@@ -123,7 +123,8 @@ def run_code_agent() -> None:
     if not submitted_patch.strip():
         raise SystemExit("Agent finished without a non-empty patch.")
     patch_output.parent.mkdir(parents=True, exist_ok=True)
-    patch_output.write_text(submitted_patch)
+    # Preserve the sandbox diff exactly; Windows text mode would turn LF into CRLF.
+    patch_output.write_text(submitted_patch, newline="")
     print(f"Patch: {patch_output}")
     print(f"Trajectory: {trajectory}")
 
@@ -174,7 +175,8 @@ def run_swebench_agent() -> None:
     if not submitted_patch.strip():
         raise SystemExit("Agent finished without a non-empty patch.")
     patch_output.parent.mkdir(parents=True, exist_ok=True)
-    patch_output.write_text(submitted_patch)
+    # Preserve the sandbox diff exactly; Windows text mode would turn LF into CRLF.
+    patch_output.write_text(submitted_patch, newline="")
     print(f"Patch: {patch_output}")
     print(f"Trajectory: {trajectory}")
 
